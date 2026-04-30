@@ -27,6 +27,7 @@ class CoordinateTransformer:
     BESSEL_B = 6356078.96290
     BESSEL_E = 0.081696831
     BESSEL_I = 1 / 299.153
+    BESSEL_E2 = 1 - (BESSEL_B / BESSEL_A) ** 2
     
     # Krasovsky ellipsoid parameters (used for S-42/83/03)
     KRASOVSKY_A = 6378245.0
@@ -85,6 +86,7 @@ class CoordinateTransformer:
     def jtsk03_to_geographic(self, x, y):
         """
         Convert JTSK03 Krovak projection to geographic (lat/lon) coordinates
+        Using proper Krovak inverse transformation
         
         Args:
             x: X coordinate in JTSK03 system (meters)
@@ -93,18 +95,40 @@ class CoordinateTransformer:
         Returns:
             tuple: (latitude_rad, longitude_rad) in radians on Bessel ellipsoid
         """
-        # Inverse Krovak projection (JTSK03 to geographic)
+        # Krovak inverse projection
+        # Calculate rho and theta from cartesian coordinates
         rho = math.sqrt(x**2 + y**2)
         theta = math.atan2(x, y)
         
-        # Conformal latitude
+        # Calculate D (longitude in the oblique cone system)
         D = theta / self.KROVAK_N
-        psi = 2 * (math.atan(math.exp(
-            (1 / self.KROVAK_N) * math.log(self.KROVAK_RHO_0 / rho)
-        )) - math.pi / 4)
         
-        # Geodetic latitude (iterative method)
-        lat_rad = math.asin(math.sin(self.KROVAK_A_PARAM) * math.sin(psi))
+        # Calculate psi (conformal latitude in the oblique cone system)
+        psi = 2 * (math.atan(math.exp(
+            (1.0 / self.KROVAK_N) * math.log(self.KROVAK_RHO_0 / rho)
+        )) - math.pi / 4.0)
+        
+        # Conformal to geodetic latitude transformation
+        # First approximation using sine rule
+        sin_U = math.sin(self.KROVAK_A_PARAM) * math.sin(psi)
+        
+        # Clamp to valid range for asin
+        sin_U = max(-1.0, min(1.0, sin_U))
+        U = math.asin(sin_U)
+        
+        # Convert conformal latitude to geodetic latitude
+        # Using iterative method with Bessel parameters
+        e2 = self.BESSEL_E2
+        e = math.sqrt(e2)
+        
+        # Iterative calculation
+        lat_rad = U
+        for _ in range(10):
+            sin_lat = math.sin(lat_rad)
+            lat_rad = 2 * math.atan(
+                ((1 + e * sin_lat) / (1 - e * sin_lat)) ** (e / 2) * 
+                math.tan(math.pi / 4 + U / 2)
+            ) - math.pi / 2
         
         # Longitude
         lon_rad = D + self.KROVAK_V_K
@@ -125,7 +149,7 @@ class CoordinateTransformer:
         """
         if ellipsoid == 'bessel':
             a = self.BESSEL_A
-            e2 = 1 - (self.BESSEL_B / a) ** 2
+            e2 = self.BESSEL_E2
         elif ellipsoid == 'grs80':
             a = self.GRS80_A
             e2 = self.GRS80_E2
@@ -160,7 +184,7 @@ class CoordinateTransformer:
         if ellipsoid == 'bessel':
             a = self.BESSEL_A
             b = self.BESSEL_B
-            e2 = 1 - (b / a) ** 2
+            e2 = self.BESSEL_E2
         elif ellipsoid == 'grs80':
             a = self.GRS80_A
             b = self.GRS80_B
@@ -173,9 +197,11 @@ class CoordinateTransformer:
         lon_rad = math.atan2(Y, X)
         
         p = math.sqrt(X**2 + Y**2)
+        e_prime2 = e2 / (1 - e2)
+        
+        # Iterative method using Bowring's formula
         lat_rad = math.atan2(Z, p * (1 - e2))
         
-        # Iterative method for better accuracy
         for _ in range(10):
             sin_lat = math.sin(lat_rad)
             N = a / math.sqrt(1 - e2 * sin_lat**2)
@@ -208,20 +234,16 @@ class CoordinateTransformer:
             Rx, Ry, Rz = -Rx, -Ry, -Rz
             m = -m
         
-        # Build rotation matrix
-        sin_rx = math.sin(Rx)
-        cos_rx = math.cos(Rx)
-        sin_ry = math.sin(Ry)
-        cos_ry = math.cos(Ry)
-        sin_rz = math.sin(Rz)
-        cos_rz = math.cos(Rz)
+        # Small angles approximation (valid for small rotations in radians)
+        # X' = (1+m)(X - Rz*Y + Ry*Z) + dX
+        # Y' = (1+m)(Rz*X + Y - Rx*Z) + dY
+        # Z' = (1+m)(-Ry*X + Rx*Y + Z) + dZ
         
-        # Rotation matrix (small angles approximation acceptable)
-        # For small angles: sin(θ) ≈ θ, cos(θ) ≈ 1
+        scale = 1 + m
         
-        X_out = (1 + m) * (X - Rz * Y + Ry * Z) + dX
-        Y_out = (1 + m) * (Rz * X + Y - Rx * Z) + dY
-        Z_out = (1 + m) * (-Ry * X + Rx * Y + Z) + dZ
+        X_out = scale * (X - Rz * Y + Ry * Z) + dX
+        Y_out = scale * (Rz * X + Y - Rx * Z) + dY
+        Z_out = scale * (-Ry * X + Rx * Y + Z) + dZ
         
         return X_out, Y_out, Z_out
     
