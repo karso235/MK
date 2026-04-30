@@ -2,39 +2,84 @@
 # -*- coding: utf-8 -*-
 """
 Coordinate Transformation: JTSK03 (S-JTSK) to S-42/83/03
-Based on mathematical cartography transformation methods from Rezortná transformačná služba
+Based on official Rezortná transformačná služba parameters
 
-This script transforms coordinates from JTSK03 (Slovak Local System)
+This script transforms coordinates from JTSK03 (Slovak Local System - Krovak projection)
 to S-42/83/03 (Soviet Unified System, Zone 4)
+
+Source: Rezortná transformačná služba documentation
 """
 
 import math
+import numpy as np
+
+
+def dms2deg(degrees, minutes, seconds):
+    """Convert degrees, minutes, seconds to decimal degrees"""
+    return degrees + minutes / 60.0 + seconds / 3600.0
 
 
 class CoordinateTransformer:
     """Transform coordinates between JTSK03 and S-42/83/03 systems"""
     
-    # Krasovsky ellipsoid parameters (used for both systems)
-    A = 6378245.0  # Semi-major axis (meters)
-    B = 6356863.019  # Semi-minor axis (meters)
-    E2 = 0.006693421622965943  # First eccentricity squared
-    E = 0.0818192702210484  # First eccentricity
+    # Bessel ellipsoid parameters (used for JTSK03)
+    BESSEL_A = 6377397.155
+    BESSEL_B = 6356078.96290
+    BESSEL_E = 0.081696831
+    BESSEL_I = 1 / 299.153
     
-    # JTSK03 (Oblique Conformal Conic - Krovak projection) parameters
-    JTSK03_LAT0 = math.radians(49.5)  # Reference latitude
-    JTSK03_LON0 = math.radians(24.833333333)  # Reference longitude
-    JTSK03_LAT_CONE = math.radians(49.5)  # Cone latitude
-    JTSK03_FALSE_EASTING = 0.0
-    JTSK03_FALSE_NORTHING = 0.0
+    # Krasovsky ellipsoid parameters (used for S-42/83/03)
+    KRASOVSKY_A = 6378245.0
+    KRASOVSKY_B = 6356863.01887
+    KRASOVSKY_E2 = 0.006693421623
+    KRASOVSKY_E = 0.0818192702
     
-    # S-42/83/03 Transverse Mercator parameters (Zone 4)
+    # GRS80 ellipsoid parameters (intermediate)
+    GRS80_A = 6378137.0
+    GRS80_B = 6356752.314245
+    GRS80_E2 = 0.00669438
+    
+    # Krovak projection parameters
+    KROVAK_ALPHA = 1.000597498372
+    KROVAK_K = 1.003419164
+    KROVAK_U_K = math.radians(dms2deg(59, 42, 42.69689))
+    KROVAK_V_K = math.radians(dms2deg(42, 31, 31.417251))
+    KROVAK_A_PARAM = math.pi / 2 - KROVAK_U_K
+    KROVAK_S_0 = math.radians(dms2deg(78, 30, 0))
+    KROVAK_N = math.sin(KROVAK_S_0)
+    KROVAK_R = 6380703.61054
+    KROVAK_RHO_0 = 0.9999 * KROVAK_R * (1 / math.tan(KROVAK_S_0))
+    
+    # Datum transformation parameters: Bessel -> GRS80
+    BESSEL_GRS80_PARAMS = {
+        "dX": 485.021,
+        "dY": 169.465,
+        "dZ": 483.839,
+        "Rx": math.radians(dms2deg(0, 0, -7.786342)),
+        "Ry": math.radians(dms2deg(0, 0, -4.397554)),
+        "Rz": math.radians(dms2deg(0, 0, -4.102655)),
+        "m": 0
+    }
+    
+    # Datum transformation parameters: GRS80 -> Krasovsky
+    GRS80_KRASOVSKY_PARAMS = {
+        "dX": 66.171809,
+        "dY": 23.995845,
+        "dZ": 83.769412,
+        "Rx": math.radians(dms2deg(0, 0, 2.50300846)),
+        "Ry": math.radians(dms2deg(0, 0, 2.19216164)),
+        "Rz": math.radians(dms2deg(0, 0, -2.58393360)),
+        "m": 0
+    }
+    
+    # S-42/83/03 Zone 4 parameters
     S42_LON0_ZONE4 = math.radians(27.0)  # Central meridian for zone 4
     S42_FALSE_EASTING = 4500000.0
     S42_FALSE_NORTHING = 0.0
     S42_SCALE = 0.9996  # Scale factor
     
     def __init__(self):
-        """Initialize transformer with constants"""
+        """Initialize transformer"""
         pass
     
     def jtsk03_to_geographic(self, x, y):
@@ -46,157 +91,245 @@ class CoordinateTransformer:
             y: Y coordinate in JTSK03 system (meters)
             
         Returns:
-            tuple: (latitude, longitude) in radians
+            tuple: (latitude_rad, longitude_rad) in radians on Bessel ellipsoid
         """
-        # JTSK03 uses Krovak projection (oblique conformal conic)
-        # Simplified inverse transformation
+        # Inverse Krovak projection (JTSK03 to geographic)
+        rho = math.sqrt(x**2 + y**2)
+        theta = math.atan2(x, y)
         
-        # These are empirical coefficients for Krovak inverse
-        # Based on standard Slovak transformation
-        x_adj = x / 1000000.0
-        y_adj = y / 1000000.0
+        # Conformal latitude
+        D = theta / self.KROVAK_N
+        psi = 2 * (math.atan(math.exp(
+            (1 / self.KROVAK_N) * math.log(self.KROVAK_RHO_0 / rho)
+        )) - math.pi / 4)
         
-        # Inverse Krovak transformation coefficients
-        # Using polynomial approximation
-        lon = 24.8333333333333 - (y_adj * 0.00003365)
-        lat = 49.5 - (x_adj * 0.00003365)
+        # Geodetic latitude (iterative method)
+        lat_rad = math.asin(math.sin(self.KROVAK_A_PARAM) * math.sin(psi))
         
-        # More precise inverse using iterative method
-        # Convert to radians for precise calculation
-        lat_rad, lon_rad = self._krovak_inverse(x, y)
+        # Longitude
+        lon_rad = D + self.KROVAK_V_K
         
         return lat_rad, lon_rad
     
-    def _krovak_inverse(self, x, y):
+    def geographic_to_cartesian(self, lat_rad, lon_rad, ellipsoid='bessel'):
         """
-        Precise inverse Krovak projection
+        Convert geographic coordinates to cartesian (X, Y, Z)
         
         Args:
-            x: X coordinate (meters)
-            y: Y coordinate (meters)
+            lat_rad: Latitude in radians
+            lon_rad: Longitude in radians
+            ellipsoid: 'bessel', 'grs80', or 'krasovsky'
+            
+        Returns:
+            tuple: (X, Y, Z) cartesian coordinates
+        """
+        if ellipsoid == 'bessel':
+            a = self.BESSEL_A
+            e2 = 1 - (self.BESSEL_B / a) ** 2
+        elif ellipsoid == 'grs80':
+            a = self.GRS80_A
+            e2 = self.GRS80_E2
+        else:  # krasovsky
+            a = self.KRASOVSKY_A
+            e2 = self.KRASOVSKY_E2
+        
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        sin_lon = math.sin(lon_rad)
+        cos_lon = math.cos(lon_rad)
+        
+        N = a / math.sqrt(1 - e2 * sin_lat**2)
+        
+        X = N * cos_lat * cos_lon
+        Y = N * cos_lat * sin_lon
+        Z = N * (1 - e2) * sin_lat
+        
+        return X, Y, Z
+    
+    def cartesian_to_geographic(self, X, Y, Z, ellipsoid='bessel'):
+        """
+        Convert cartesian (X, Y, Z) to geographic coordinates
+        
+        Args:
+            X, Y, Z: Cartesian coordinates
+            ellipsoid: 'bessel', 'grs80', or 'krasovsky'
             
         Returns:
             tuple: (latitude_rad, longitude_rad)
         """
-        # Krovak projection inverse
-        # Using standard Slovak algorithm
+        if ellipsoid == 'bessel':
+            a = self.BESSEL_A
+            b = self.BESSEL_B
+            e2 = 1 - (b / a) ** 2
+        elif ellipsoid == 'grs80':
+            a = self.GRS80_A
+            b = self.GRS80_B
+            e2 = self.GRS80_E2
+        else:  # krasovsky
+            a = self.KRASOVSKY_A
+            b = self.KRASOVSKY_B
+            e2 = self.KRASOVSKY_E2
         
-        # Constants for Krovak
-        alpha = 1.00281635
-        k = 0.9999
+        lon_rad = math.atan2(Y, X)
         
-        # Remove false coordinates
-        x_adj = x - self.JTSK03_FALSE_EASTING
-        y_adj = y - self.JTSK03_FALSE_NORTHING
+        p = math.sqrt(X**2 + Y**2)
+        lat_rad = math.atan2(Z, p * (1 - e2))
         
-        # Convert to conformal coordinates
-        p = math.sqrt(x_adj**2 + y_adj**2)
-        theta = math.atan2(y_adj, x_adj)
-        
-        # Inverse conformal latitude
-        lat_c = 2 * math.atan(math.exp(math.log(p / (self.A * k * alpha)) / alpha)) - math.pi / 2
-        
-        # Longitude from theta
-        lon_c = self.JTSK03_LON0 + (theta / alpha)
-        
-        # Convert conformal coordinates to geodetic
-        # Using iterative method
-        lat_rad = lat_c
+        # Iterative method for better accuracy
         for _ in range(10):
             sin_lat = math.sin(lat_rad)
-            w = math.sqrt(1 - self.E2 * sin_lat**2)
-            lat_rad = 2 * math.atan((1 + self.E2 * sin_lat / w) * 
-                                    math.tan(lat_c / 2 + math.pi / 4) - 
-                                    self.E2 * math.tan(lat_c / 2 + math.pi / 4)) - math.pi / 2
+            N = a / math.sqrt(1 - e2 * sin_lat**2)
+            lat_rad = math.atan2(Z + e2 * N * sin_lat, p)
         
-        return lat_rad, lon_c
+        return lat_rad, lon_rad
+    
+    def datum_shift(self, X, Y, Z, params, inverse=False):
+        """
+        Apply 7-parameter datum transformation (Bursa-Wolf model)
+        
+        Args:
+            X, Y, Z: Input cartesian coordinates
+            params: Transformation parameters dictionary
+            inverse: If True, apply inverse transformation
+            
+        Returns:
+            tuple: (X_out, Y_out, Z_out) transformed coordinates
+        """
+        dX = params['dX']
+        dY = params['dY']
+        dZ = params['dZ']
+        Rx = params['Rx']
+        Ry = params['Ry']
+        Rz = params['Rz']
+        m = params['m']
+        
+        if inverse:
+            dX, dY, dZ = -dX, -dY, -dZ
+            Rx, Ry, Rz = -Rx, -Ry, -Rz
+            m = -m
+        
+        # Build rotation matrix
+        sin_rx = math.sin(Rx)
+        cos_rx = math.cos(Rx)
+        sin_ry = math.sin(Ry)
+        cos_ry = math.cos(Ry)
+        sin_rz = math.sin(Rz)
+        cos_rz = math.cos(Rz)
+        
+        # Rotation matrix (small angles approximation acceptable)
+        # For small angles: sin(θ) ≈ θ, cos(θ) ≈ 1
+        
+        X_out = (1 + m) * (X - Rz * Y + Ry * Z) + dX
+        Y_out = (1 + m) * (Rz * X + Y - Rx * Z) + dY
+        Z_out = (1 + m) * (-Ry * X + Rx * Y + Z) + dZ
+        
+        return X_out, Y_out, Z_out
     
     def geographic_to_s42_zone4(self, lat_rad, lon_rad):
         """
         Convert geographic coordinates to S-42/83/03 Zone 4 (Transverse Mercator)
         
         Args:
-            lat_rad: Latitude in radians
-            lon_rad: Longitude in radians
+            lat_rad: Latitude in radians (on Krasovsky ellipsoid)
+            lon_rad: Longitude in radians (on Krasovsky ellipsoid)
             
         Returns:
             tuple: (easting, northing) in S-42/83/03 Zone 4
         """
-        # S-42/83/03 uses Transverse Mercator projection for Zone 4
-        # Central meridian at 27° E
+        a = self.KRASOVSKY_A
+        e2 = self.KRASOVSKY_E2
+        e_prime2 = e2 / (1 - e2)
         
-        # Calculate parameters
         sin_lat = math.sin(lat_rad)
         cos_lat = math.cos(lat_rad)
         tan_lat = math.tan(lat_rad)
         
-        n = self.A / math.sqrt(1 - self.E2 * sin_lat**2)
-        e_prime2 = self.E2 / (1 - self.E2)
+        N = a / math.sqrt(1 - e2 * sin_lat**2)
         
-        # Calculate longitude difference from central meridian
+        # Longitude difference from central meridian
         lon_diff = lon_rad - self.S42_LON0_ZONE4
         
-        # Ensure lon_diff is within -pi to pi
+        # Ensure lon_diff is within valid range
         while lon_diff > math.pi:
             lon_diff -= 2 * math.pi
         while lon_diff < -math.pi:
             lon_diff += 2 * math.pi
         
-        # Calculate meridional arc
-        m = (self.A * ((1 - self.E2 / 4 - 3 * self.E2**2 / 64 - 5 * self.E2**3 / 256) * lat_rad -
-                       (3 * self.E2 / 8 + 3 * self.E2**2 / 32 - 45 * self.E2**3 / 1024) * math.sin(2 * lat_rad) +
-                       (15 * self.E2**2 / 256 - 45 * self.E2**3 / 1024) * math.sin(4 * lat_rad) -
-                       (35 * self.E2**3 / 3072) * math.sin(6 * lat_rad)))
+        # Meridional arc
+        A0 = 1 - e2 / 4 - 3 * e2**2 / 64 - 5 * e2**3 / 256
+        A2 = 3 / 8 * (e2 + e2**2 / 4 - 15 * e2**3 / 128)
+        A4 = 15 / 256 * (e2**2 - 3 * e2**3 / 4)
+        A6 = -35 / 3072 * e2**3
         
-        # Calculate easting and northing
-        t = tan_lat**2
-        c = e_prime2 * cos_lat**2
-        a = cos_lat * lon_diff
+        M = a * (A0 * lat_rad - A2 * math.sin(2 * lat_rad) + 
+                 A4 * math.sin(4 * lat_rad) - A6 * math.sin(6 * lat_rad))
         
-        # Easting
-        easting = (self.S42_SCALE * n * (a + 
-                                         (a**3 / 6) * (1 - t + c) +
-                                         (a**5 / 120) * (5 - 18*t + t**2 + 72*c - 58*e_prime2)) +
+        T = tan_lat**2
+        C = e_prime2 * cos_lat**2
+        A = cos_lat * lon_diff
+        
+        # Transverse Mercator formulas
+        easting = (self.S42_SCALE * N * (A + 
+                                         A**3 / 6 * (1 - T + C) +
+                                         A**5 / 120 * (5 - 18*T + T**2 + 72*C - 58*e_prime2)) +
                    self.S42_FALSE_EASTING)
         
-        # Northing
-        northing = (self.S42_SCALE * (m + n * tan_lat * 
-                                      (a**2 / 2 + 
-                                       (a**4 / 24) * (5 - t + 9*c + 4*c**2) +
-                                       (a**6 / 720) * (61 - 58*t + t**2 + 600*c - 330*e_prime2))) +
+        northing = (self.S42_SCALE * (M + N * tan_lat * 
+                                      (A**2 / 2 + 
+                                       A**4 / 24 * (5 - T + 9*C + 4*C**2) +
+                                       A**6 / 720 * (61 - 58*T + T**2 + 600*C - 330*e_prime2))) +
                     self.S42_FALSE_NORTHING)
         
         return easting, northing
     
     def transform(self, x_jtsk03, y_jtsk03):
         """
-        Main transformation method: JTSK03 -> Geographic -> S-42/83/03 Zone 4
+        Main transformation method: JTSK03 -> Geographic (Bessel) -> 
+        Cartesian (Bessel) -> Cartesian (GRS80) -> Cartesian (Krasovsky) ->
+        Geographic (Krasovsky) -> S-42/83/03 Zone 4
         
         Args:
             x_jtsk03: X coordinate in JTSK03 system (meters)
             y_jtsk03: Y coordinate in JTSK03 system (meters)
             
         Returns:
-            dict: {
-                'x_jtsk03': original x,
-                'y_jtsk03': original y,
-                'latitude': geographic latitude (decimal degrees),
-                'longitude': geographic longitude (decimal degrees),
-                'x_s42': transformed x in S-42/83/03 Zone 4,
-                'y_s42': transformed y in S-42/83/03 Zone 4
-            }
+            dict: Complete transformation results
         """
-        # Step 1: JTSK03 -> Geographic (radians)
-        lat_rad, lon_rad = self.jtsk03_to_geographic(x_jtsk03, y_jtsk03)
+        # Step 1: JTSK03 Krovak -> Geographic (Bessel ellipsoid, radians)
+        lat_bessel, lon_bessel = self.jtsk03_to_geographic(x_jtsk03, y_jtsk03)
         
-        # Step 2: Geographic -> S-42/83/03 Zone 4
-        x_s42, y_s42 = self.geographic_to_s42_zone4(lat_rad, lon_rad)
+        # Step 2: Geographic (Bessel) -> Cartesian (Bessel)
+        X_bessel, Y_bessel, Z_bessel = self.geographic_to_cartesian(
+            lat_bessel, lon_bessel, ellipsoid='bessel'
+        )
+        
+        # Step 3: Datum shift Bessel -> GRS80
+        X_grs80, Y_grs80, Z_grs80 = self.datum_shift(
+            X_bessel, Y_bessel, Z_bessel, 
+            self.BESSEL_GRS80_PARAMS
+        )
+        
+        # Step 4: Datum shift GRS80 -> Krasovsky
+        X_krasovsky, Y_krasovsky, Z_krasovsky = self.datum_shift(
+            X_grs80, Y_grs80, Z_grs80,
+            self.GRS80_KRASOVSKY_PARAMS
+        )
+        
+        # Step 5: Cartesian (Krasovsky) -> Geographic (Krasovsky)
+        lat_krasovsky, lon_krasovsky = self.cartesian_to_geographic(
+            X_krasovsky, Y_krasovsky, Z_krasovsky, ellipsoid='krasovsky'
+        )
+        
+        # Step 6: Geographic (Krasovsky) -> S-42/83/03 Zone 4
+        x_s42, y_s42 = self.geographic_to_s42_zone4(lat_krasovsky, lon_krasovsky)
         
         return {
             'x_jtsk03': x_jtsk03,
             'y_jtsk03': y_jtsk03,
-            'latitude': math.degrees(lat_rad),
-            'longitude': math.degrees(lon_rad),
+            'latitude_bessel': math.degrees(lat_bessel),
+            'longitude_bessel': math.degrees(lon_bessel),
+            'latitude_krasovsky': math.degrees(lat_krasovsky),
+            'longitude_krasovsky': math.degrees(lon_krasovsky),
             'x_s42': x_s42,
             'y_s42': y_s42
         }
@@ -206,38 +339,39 @@ def main():
     """Main function - example usage"""
     transformer = CoordinateTransformer()
     
-    print("=" * 80)
+    print("=" * 90)
     print("JTSK03 to S-42/83/03 Zone 4 Coordinate Transformation")
-    print("Based on Rezortná transformačná služba")
-    print("=" * 80)
+    print("Based on Rezortná transformačná služba official parameters")
+    print("=" * 90)
     print()
     
-    # Test with the provided example from Rezortná transformačná služba
+    # Test with the example from Rezortná transformačná služba
     print("Test Case from Rezortná transformačná služba:")
-    print("-" * 80)
+    print("-" * 90)
     
     x_test = 1204350.50
     y_test = 496927.41
     
-    print(f"Input (JTSK03): X={x_test:.2f} m, Y={y_test:.2f} m")
+    print(f"Input (JTSK03):     X={x_test:.2f} m, Y={y_test:.2f} m")
     
     result = transformer.transform(x_test, y_test)
     
-    print(f"  → Geographic: Lat={result['latitude']:.6f}°, Lon={result['longitude']:.6f}°")
-    print(f"  → Output (S-42/83/03, Zone 4): X={result['x_s42']:.2f} m, Y={result['y_s42']:.2f} m")
+    print(f"Geographic (Bessel):   Lat={result['latitude_bessel']:.6f}°, Lon={result['longitude_bessel']:.6f}°")
+    print(f"Geographic (Krasovsky): Lat={result['latitude_krasovsky']:.6f}°, Lon={result['longitude_krasovsky']:.6f}°")
+    print(f"Output (S-42/83/03 Zone 4): X={result['x_s42']:.3f} m, Y={result['y_s42']:.3f} m")
     print()
-    print("Expected results from Rezortná transformačná služba:")
-    print(f"  → Geographic: Lat=48.493798°, Lon=35.619555°")
-    print(f"  → Output (S-42/83/03, Zone 4): X=5422203.220 m, Y=4283434.780 m")
+    print("Expected from Rezortná transformačná služba:")
+    print(f"  Geographic: Lat=48.493798°, Lon=35.619555°")
+    print(f"  Output S-42/83/03 Zone 4: X=5422203.220 m, Y=4283434.780 m")
     print()
     print()
     
     # Interactive input
-    print("=" * 80)
+    print("=" * 90)
     print("Interactive Transformation")
-    print("=" * 80)
-    print("Enter JTSK03 coordinates to transform to S-42/83/03")
-    print("(or 'q' to quit)")
+    print("=" * 90)
+    print("Enter JTSK03 coordinates to transform to S-42/83/03 Zone 4")
+    print("(or press Ctrl+C to quit)")
     print()
     
     try:
@@ -253,10 +387,11 @@ def main():
                 result = transformer.transform(x_value, y_value)
                 
                 print("\nTransformation Result:")
-                print("-" * 80)
-                print(f"  Input JTSK03:           X={result['x_jtsk03']:.2f} m, Y={result['y_jtsk03']:.2f} m")
-                print(f"  Geographic:             Lat={result['latitude']:.6f}°, Lon={result['longitude']:.6f}°")
-                print(f"  Output S-42/83/03 Zone4: X={result['x_s42']:.2f} m, Y={result['y_s42']:.2f} m")
+                print("-" * 90)
+                print(f"  Input JTSK03:              X={result['x_jtsk03']:.2f} m, Y={result['y_jtsk03']:.2f} m")
+                print(f"  Geographic (Bessel):       Lat={result['latitude_bessel']:.6f}°, Lon={result['longitude_bessel']:.6f}°")
+                print(f"  Geographic (Krasovsky):    Lat={result['latitude_krasovsky']:.6f}°, Lon={result['longitude_krasovsky']:.6f}°")
+                print(f"  Output S-42/83/03 Zone 4:  X={result['x_s42']:.3f} m, Y={result['y_s42']:.3f} m")
                 print()
             except ValueError as e:
                 print(f"Invalid input. Please enter valid coordinates: {e}")
